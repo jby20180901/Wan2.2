@@ -26,6 +26,7 @@ from .utils.fm_solvers import (
     retrieve_timesteps,
 )
 from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+from .utils.diffusion_utils import IntermediateResultSaver
 
 
 class WanT2V:
@@ -210,7 +211,10 @@ class WanT2V:
                  guide_scale=5.0,
                  n_prompt="",
                  seed=-1,
-                 offload_model=True):
+                 offload_model=True,
+                 save_intermediate_dir=None,
+                 save_latents=True,
+                 save_decoded=False):
         r"""
         Generates video frames from text prompt using diffusion process.
 
@@ -237,6 +241,14 @@ class WanT2V:
                 Random seed for noise generation. If -1, use random seed.
             offload_model (`bool`, *optional*, defaults to True):
                 If True, offloads models to CPU during generation to save VRAM
+            save_intermediate_dir (`str`, *optional*, defaults to None):
+                If provided, saves intermediate diffusion results to this directory.
+                Each step will have its own subdirectory named 'step_XXX_tYYYY'.
+            save_latents (`bool`, *optional*, defaults to True):
+                If save_intermediate_dir is set, whether to save raw latent codes as .pt files
+            save_decoded (`bool`, *optional*, defaults to False):
+                If save_intermediate_dir is set, whether to save decoded RGB images for each frame.
+                Note: This requires VAE decoding at each step and is memory-intensive.
 
         Returns:
             torch.Tensor:
@@ -326,13 +338,23 @@ class WanT2V:
             else:
                 raise NotImplementedError("Unsupported solver.")
 
+            # Initialize intermediate result saver if needed
+            result_saver = None
+            if save_intermediate_dir is not None and self.rank == 0:
+                result_saver = IntermediateResultSaver(
+                    save_dir=save_intermediate_dir,
+                    save_latents=save_latents,
+                    save_decoded=save_decoded,
+                    vae=self.vae if save_decoded else None
+                )
+
             # sample videos
             latents = noise
 
             arg_c = {'context': context, 'seq_len': seq_len}
             arg_null = {'context': context_null, 'seq_len': seq_len}
 
-            for _, t in enumerate(tqdm(timesteps)):
+            for step_idx, t in enumerate(tqdm(timesteps)):
                 latent_model_input = latents
                 timestep = [t]
 
@@ -359,6 +381,16 @@ class WanT2V:
                     generator=seed_g)[0]
                 latents = [temp_x0.squeeze(0)]
 
+                # Save intermediate results
+                if result_saver is not None:
+                    result_saver.save_step_results(
+                        latents=latents[0],
+                        step=t.item(),
+                        step_idx=step_idx,
+                        frame_num=frame_num,
+                        vae_stride=self.vae_stride
+                    )
+
             x0 = latents
             if offload_model:
                 self.low_noise_model.cpu()
@@ -374,5 +406,10 @@ class WanT2V:
             torch.cuda.synchronize()
         if dist.is_initialized():
             dist.barrier()
+
+        # Save intermediate results summary
+        if result_saver is not None and self.rank == 0:
+            result_saver.save_final_result(videos[0], "final_video.pt")
+            result_saver.get_summary()
 
         return videos[0] if self.rank == 0 else None

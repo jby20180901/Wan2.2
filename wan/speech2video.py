@@ -34,6 +34,7 @@ from .utils.fm_solvers import (
     retrieve_timesteps,
 )
 from .utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+from .utils.diffusion_utils import IntermediateResultSaver
 
 
 def load_safetensors(path):
@@ -410,6 +411,9 @@ class WanS2V:
         seed=-1,
         offload_model=True,
         init_first_frame=False,
+        save_intermediate_dir=None,
+        save_latents=True,
+        save_decoded=False,
     ):
         r"""
         Generates video frames from input image and text prompt using diffusion process.
@@ -448,6 +452,12 @@ class WanS2V:
                 If True, offloads models to CPU during generation to save VRAM
             init_first_frame (`bool`, *optional*, defaults to False):
                 Whether to use the reference image as the first frame (i.e., standard image-to-video generation)
+            save_intermediate_dir (`str`, *optional*, defaults to None):
+                If provided, saves intermediate diffusion results to this directory.
+            save_latents (`bool`, *optional*, defaults to True):
+                Whether to save raw latent codes as .pt files
+            save_decoded (`bool`, *optional*, defaults to False):
+                Whether to save decoded RGB images for each frame.
 
         Returns:
             torch.Tensor:
