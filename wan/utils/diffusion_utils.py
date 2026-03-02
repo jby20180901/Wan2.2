@@ -2,6 +2,7 @@
 import os
 import torch
 import torch.nn.functional as F
+import torchvision
 from pathlib import Path
 from PIL import Image
 import numpy as np
@@ -83,19 +84,20 @@ class IntermediateResultSaver:
                 # Decode latents to video
                 with torch.no_grad():
                     video = self.vae.decode([latents])[0]  # [3, T, H, W]
-            
-            # Save each frame
-            video = video.cpu().numpy()
-            video = np.transpose(video, (1, 2, 3, 0))  # [T, H, W, 3]
-            
-            # Normalize to 0-255 if needed
-            if video.dtype == np.float32 or video.dtype == np.float64:
-                video = np.clip(video * 255, 0, 255).astype(np.uint8)
-            
-            for frame_idx in range(frame_num):
-                frame = video[frame_idx]
+
+            # Save each frame using the same value_range mapping as final save path
+            # (normalize=True, value_range=(-1, 1))
+            video = video.detach().cpu()
+            valid_frame_num = min(frame_num, video.shape[1])
+            for frame_idx in range(valid_frame_num):
+                frame = video[:, frame_idx]
                 frame_path = step_dir / f"frame_{frame_idx:03d}.png"
-                Image.fromarray(frame).save(frame_path)
+                torchvision.utils.save_image(
+                    frame,
+                    str(frame_path),
+                    nrow=1,
+                    normalize=True,
+                    value_range=(-1, 1))
         
         except Exception as e:
             print(f"Warning: Failed to decode and save frames: {e}")

@@ -221,6 +221,21 @@ def _parse_args():
         action="store_true",
         default=False,
         help="Whether to convert model paramerters dtype.")
+    parser.add_argument(
+        "--save_intermediate_dir",
+        type=str,
+        default=None,
+        help="Directory for saving intermediate diffusion results.")
+    parser.add_argument(
+        "--save_latents",
+        type=str2bool,
+        default=True,
+        help="Whether to save latent tensors for each diffusion step when --save_intermediate_dir is set.")
+    parser.add_argument(
+        "--save_decoded",
+        type=str2bool,
+        default=False,
+        help="Whether to decode and save RGB frames for each diffusion step when --save_intermediate_dir is set.")
 
     # animate
     parser.add_argument(
@@ -424,7 +439,10 @@ def generate(args):
             sampling_steps=args.sample_steps,
             guide_scale=args.sample_guide_scale,
             seed=args.base_seed,
-            offload_model=args.offload_model)
+            offload_model=args.offload_model,
+            save_intermediate_dir=args.save_intermediate_dir,
+            save_latents=args.save_latents,
+            save_decoded=args.save_decoded)
     elif "ti2v" in args.task:
         logging.info("Creating WanTI2V pipeline.")
         wan_ti2v = wan.WanTI2V(
@@ -451,7 +469,10 @@ def generate(args):
             sampling_steps=args.sample_steps,
             guide_scale=args.sample_guide_scale,
             seed=args.base_seed,
-            offload_model=args.offload_model)
+            offload_model=args.offload_model,
+            save_intermediate_dir=args.save_intermediate_dir,
+            save_latents=args.save_latents,
+            save_decoded=args.save_decoded)
     elif "animate" in args.task:
         logging.info("Creating Wan-Animate pipeline.")
         wan_animate = wan.WanAnimate(
@@ -512,6 +533,9 @@ def generate(args):
             seed=args.base_seed,
             offload_model=args.offload_model,
             init_first_frame=args.start_from_ref,
+            save_intermediate_dir=args.save_intermediate_dir,
+            save_latents=args.save_latents,
+            save_decoded=args.save_decoded,
         )
     else:
         logging.info("Creating WanI2V pipeline.")
@@ -537,7 +561,10 @@ def generate(args):
             sampling_steps=args.sample_steps,
             guide_scale=args.sample_guide_scale,
             seed=args.base_seed,
-            offload_model=args.offload_model)
+            offload_model=args.offload_model,
+            save_intermediate_dir=args.save_intermediate_dir,
+            save_latents=args.save_latents,
+            save_decoded=args.save_decoded)
 
     if rank == 0:
         if args.save_file is None:
