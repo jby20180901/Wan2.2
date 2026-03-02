@@ -113,26 +113,54 @@ def normalize_convergence(data):
     return 1.0 - (arr - d_min) / (d_max - d_min)
 
 
-def save_frame_csv(csv_path: Path, step_indices, timesteps, low_mse, high_mse, low_conv, high_conv):
+def compute_snr_from_timesteps(timesteps, num_train_timesteps: int, eps: float = 1e-6):
+    if num_train_timesteps <= 0:
+        raise ValueError("num_train_timesteps must be > 0")
+    t = np.asarray(timesteps, dtype=np.float64)
+    sigma = np.clip(t / float(num_train_timesteps), eps, 1.0 - eps)
+    alpha = 1.0 - sigma
+    logsnr = 2.0 * (np.log(alpha) - np.log(sigma))
+    snr = np.exp(np.clip(logsnr, -80.0, 80.0))
+    return snr.astype(np.float64), logsnr.astype(np.float64)
+
+
+def save_frame_csv(
+    csv_path: Path,
+    step_indices,
+    timesteps,
+    low_mse,
+    high_mse,
+    low_conv,
+    high_conv,
+    snr=None,
+    logsnr=None,
+):
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow([
+        header = [
             "step_index",
             "timestep",
             "low_mse",
             "high_mse",
             "low_convergence",
             "high_convergence",
-        ])
+        ]
+        include_snr = snr is not None and logsnr is not None
+        if include_snr:
+            header.extend(["snr", "logsnr"])
+        writer.writerow(header)
         for i in range(len(step_indices)):
-            writer.writerow([
+            row = [
                 step_indices[i],
                 timesteps[i],
                 low_mse[i],
                 high_mse[i],
                 low_conv[i],
                 high_conv[i],
-            ])
+            ]
+            if include_snr:
+                row.extend([snr[i], logsnr[i]])
+            writer.writerow(row)
 
 
 def plot_frame_curve(plot_path: Path, title: str, step_indices, low_conv, high_conv):
@@ -158,7 +186,49 @@ def plot_frame_curve(plot_path: Path, title: str, step_indices, low_conv, high_c
     plt.close()
 
 
-def analyze_from_images(parsed_steps, frame_pattern, max_units, radius, frame_plot_dir, frame_csv_dir):
+def plot_snr_curve(plot_path: Path, title: str, step_indices, snr, logsnr, snr_log_y: bool = False):
+    plt = _import_matplotlib()
+    fig, ax1 = plt.subplots(figsize=(10, 6))
+
+    line1 = ax1.plot(step_indices, snr, color="green", linewidth=2.2, label="SNR")[0]
+    ax1.set_xlabel("Diffusion Step Index")
+    ax1.set_ylabel("SNR (log scale)" if snr_log_y else "SNR", color="green")
+    ax1.tick_params(axis="y", labelcolor="green")
+    if snr_log_y:
+        ax1.set_yscale("log")
+
+    ax2 = ax1.twinx()
+    line2 = ax2.plot(
+        step_indices,
+        logsnr,
+        color="purple",
+        linewidth=2.2,
+        linestyle="--",
+        label="logSNR",
+    )[0]
+    ax2.set_ylabel("logSNR", color="purple")
+    ax2.tick_params(axis="y", labelcolor="purple")
+
+    ax1.set_title(title)
+    ax1.grid(alpha=0.3)
+    lines = [line1, line2]
+    labels = [line.get_label() for line in lines]
+    ax1.legend(lines, labels, loc="best")
+    fig.tight_layout()
+    fig.savefig(plot_path, dpi=160)
+    plt.close(fig)
+
+
+def analyze_from_images(
+    parsed_steps,
+    frame_pattern,
+    max_units,
+    radius,
+    frame_plot_dir,
+    frame_csv_dir,
+    num_train_timesteps,
+    export_snr_log_y,
+):
     final_step_dir = parsed_steps[-1][2]
     frame_paths = sorted(final_step_dir.glob(frame_pattern))
     if not frame_paths:
@@ -200,6 +270,7 @@ def analyze_from_images(parsed_steps, frame_pattern, max_units, radius, frame_pl
 
         low_conv = normalize_convergence(low_mse)
         high_conv = normalize_convergence(high_mse)
+        snr, logsnr = compute_snr_from_timesteps(valid_timesteps, num_train_timesteps)
 
         base = _sanitize_name(Path(unit_name).stem)
         save_frame_csv(
@@ -210,6 +281,8 @@ def analyze_from_images(parsed_steps, frame_pattern, max_units, radius, frame_pl
             high_mse,
             low_conv,
             high_conv,
+            snr,
+            logsnr,
         )
         plot_frame_curve(
             frame_plot_dir / f"{base}_convergence.png",
@@ -218,6 +291,22 @@ def analyze_from_images(parsed_steps, frame_pattern, max_units, radius, frame_pl
             low_conv=low_conv,
             high_conv=high_conv,
         )
+        plot_snr_curve(
+            frame_plot_dir / f"{base}_snr.png",
+            title=f"SNR Curve - {unit_name}",
+            step_indices=valid_step_indices,
+            snr=snr,
+            logsnr=logsnr,
+        )
+        if export_snr_log_y:
+            plot_snr_curve(
+                frame_plot_dir / f"{base}_snr_logy.png",
+                title=f"SNR Curve (log y) - {unit_name}",
+                step_indices=valid_step_indices,
+                snr=snr,
+                logsnr=logsnr,
+                snr_log_y=True,
+            )
 
         if len(valid_step_indices) == len(summary_steps):
             summary_low.append(low_conv)
@@ -226,7 +315,15 @@ def analyze_from_images(parsed_steps, frame_pattern, max_units, radius, frame_pl
     return summary_steps, summary_timesteps, summary_low, summary_high
 
 
-def analyze_from_latents(parsed_steps, max_units, radius, frame_plot_dir, frame_csv_dir):
+def analyze_from_latents(
+    parsed_steps,
+    max_units,
+    radius,
+    frame_plot_dir,
+    frame_csv_dir,
+    num_train_timesteps,
+    export_snr_log_y,
+):
     # Collect available latent tensors per step
     latent_by_step = []
     for step_idx, timestep, step_dir in parsed_steps:
@@ -270,6 +367,7 @@ def analyze_from_latents(parsed_steps, max_units, radius, frame_plot_dir, frame_
 
         low_conv = normalize_convergence(low_mse)
         high_conv = normalize_convergence(high_mse)
+        snr, logsnr = compute_snr_from_timesteps(valid_timesteps, num_train_timesteps)
 
         base = f"latent_t{latent_t_idx:03d}"
         save_frame_csv(
@@ -280,6 +378,8 @@ def analyze_from_latents(parsed_steps, max_units, radius, frame_plot_dir, frame_
             high_mse,
             low_conv,
             high_conv,
+            snr,
+            logsnr,
         )
         plot_frame_curve(
             frame_plot_dir / f"{base}_convergence.png",
@@ -288,6 +388,22 @@ def analyze_from_latents(parsed_steps, max_units, radius, frame_plot_dir, frame_
             low_conv=low_conv,
             high_conv=high_conv,
         )
+        plot_snr_curve(
+            frame_plot_dir / f"{base}_snr.png",
+            title=f"SNR Curve - Latent Temporal Slice {latent_t_idx}",
+            step_indices=valid_step_indices,
+            snr=snr,
+            logsnr=logsnr,
+        )
+        if export_snr_log_y:
+            plot_snr_curve(
+                frame_plot_dir / f"{base}_snr_logy.png",
+                title=f"SNR Curve (log y) - Latent Temporal Slice {latent_t_idx}",
+                step_indices=valid_step_indices,
+                snr=snr,
+                logsnr=logsnr,
+                snr_log_y=True,
+            )
 
         if len(valid_step_indices) == len(summary_steps):
             summary_low.append(low_conv)
@@ -304,6 +420,8 @@ def main():
     parser.add_argument("--frame_pattern", type=str, default="frame_*.png", help="Frame file glob pattern inside each step folder.")
     parser.add_argument("--input_type", type=str, default="auto", choices=["auto", "image", "latent"], help="Analyze decoded images, latent tensors, or auto-select.")
     parser.add_argument("--max_frames", type=int, default=None, help="Optional cap on number of units to analyze (frames for image mode, latent temporal slices for latent mode).")
+    parser.add_argument("--num_train_timesteps", type=int, default=1000, help="Number of training timesteps used to convert discrete timestep t to sigma=t/num_train_timesteps.")
+    parser.add_argument("--export_snr_log_y", action="store_true", help="Also export SNR curves with logarithmic y-axis.")
     args = parser.parse_args()
 
     steps_dir = Path(args.steps_dir)
@@ -331,6 +449,8 @@ def main():
             radius=args.radius,
             frame_plot_dir=frame_plot_dir,
             frame_csv_dir=frame_csv_dir,
+            num_train_timesteps=args.num_train_timesteps,
+            export_snr_log_y=args.export_snr_log_y,
         )
     else:
         analysis_mode = "image"
@@ -341,6 +461,8 @@ def main():
             radius=args.radius,
             frame_plot_dir=frame_plot_dir,
             frame_csv_dir=frame_csv_dir,
+            num_train_timesteps=args.num_train_timesteps,
+            export_snr_log_y=args.export_snr_log_y,
         )
 
     if summary_low and summary_high:
@@ -361,7 +483,25 @@ def main():
             [0.0] * len(summary_steps),
             mean_low,
             mean_high,
+            *compute_snr_from_timesteps(summary_timesteps, args.num_train_timesteps),
         )
+        mean_snr, mean_logsnr = compute_snr_from_timesteps(summary_timesteps, args.num_train_timesteps)
+        plot_snr_curve(
+            output_dir / "mean_snr_all_frames.png",
+            title=f"Mean SNR/logSNR Across Units ({analysis_mode} mode)",
+            step_indices=summary_steps,
+            snr=mean_snr,
+            logsnr=mean_logsnr,
+        )
+        if args.export_snr_log_y:
+            plot_snr_curve(
+                output_dir / "mean_snr_all_frames_logy.png",
+                title=f"Mean SNR/logSNR Across Units (log y, {analysis_mode} mode)",
+                step_indices=summary_steps,
+                snr=mean_snr,
+                logsnr=mean_logsnr,
+                snr_log_y=True,
+            )
 
     print(f"Done. Mode: {analysis_mode}. Results saved to: {output_dir}")
 
